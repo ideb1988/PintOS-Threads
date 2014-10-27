@@ -1,0 +1,254 @@
+			+--------------------+
+			| PROJECT 1: THREADS |
+			|   DESIGN DOCUMENT  |
+			+--------------------+
+				   
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Indranil Deb <ideb@buffalo.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			     ALARM CLOCK
+			     ===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+In the thread struct in thread.h I have added 2 new fields:
+
+int64_t sleep_duration;			/* INDRANIL Duration to sleep */
+int64_t sleep_start_time;		/* INDRANIL Time when timer_sleep is called */
+
+sleep_duration stores the time which is passed when the call to timer_sleep() is made. It is the duration of sleep for the thread.
+sleep_start_time stores the time when the timer_sleep() is actually called.
+
+I also have a list of threads which are supposed to sleep in a list called sleep_list, which is a global variable in thread.c. I did not need the list to be called using extern so I made it static.
+
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+When timer_sleep() is called, my custom function thread_sleep() is invoked. It stores the sleep_duration and the timer_sleep() invoking time in the current thread's structure. It also blocks the thread and schedules the next thread to run. It also adds the current thread into my sleep list.
+
+When timer interrupt fires, my custom function thread_wakeup also fires. At every timer interrupt (at every tick), I run through the sleep list to check if any thread has passed its sleep time (if sleep_duration + sleep_start_time is equal or less than the OS ticks at that instant). I then remove them from sleep_list and put them on another list called the priority_list. I sort that list and unblock threads according to priority(high to low)
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+The thread_wakeup function runs only when there is atleast 1 thread in sleeping list. and the sleep_list itself is a list of only blocked threads which are called by timer_sleep. So the amount of time in the thread_wakeup function is reduced greatly (Example - if there are 10 threads created and only 2 call timer_sleep(), then in the interrupt I will only have to traverse 2 threads to check for wakeup not all 10.
+
+---- SYNCHRONIZATION ----
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+
+timer_sleep runs only for the current running thread. So if it is called by many threads simultaneously, It will run only when a particular thread gets a running status. But if by any chance it is accessed simultaneously then there is a possibility of the threads sleep_duration and sleep_start_time to get mangled and hence cause a race.
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+
+I disable interrupts in thread_sleep, it is not re-enabled till another thread is scheduled after blocking the current thread.
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+Honestly, this was the first logic I thought of. I blocked the current thread in timer_sleep. During the timer interrupt I ran through all the threads which were blocked in all_list, checked if they were done with their sleep duration and woke them up. Then I thought of putting only the blocked threads in a seperate list to minimize the time spent in timer interrupt which makes it superior. (This change was done when I started answering this document. Question A3).
+
+			 PRIORITY SCHEDULING
+			 ===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+In synch.c I have a new static variable struct lock *copy_of_lock.
+
+During donation my lock variable in lock_acquire changes. I store the actual lock in copy_of_lock and revert it when the donation calculations are over.
+
+In the thread struct in thread.h I have added 4 new fields:
+
+int priority0;			/* INDRANIL Same as Priority : Never changes except when explicitly set by thread_set_priority */
+struct lock *lock_i_will_hold;	/* INDRANIL Lock which this thread is waiting on */
+struct list threads;		/* INDRANIL List of all threads waiting when this thread holds a lock */
+struct list_elem elem2;         /* INDRANIL List element for a thread's thread list*/
+
+priority0 is a variable which holds the threads priority. Donation does not affect this priority. It is set and reset only when a thread is created and when thread_set_priority is called.
+
+lock_i_will_hold stores the lock which the thread wants to hold but is already held by another thread. This lock becomes null the moment a thread is removed and unblocked from the lock's semahore waiters list and starts running.
+
+threads is a list of threads stored in the lock->holders threads list which try to acquire the lock while the holder still has not released the lock. 
+
+elem2 is a list element to identfy threads in lock->holder's thread list.
+
+>> B2: Explain the data structure used to track priority donation.
+>> Use ASCII art to diagram a nested donation.  (Alternately, submit a
+>> .png file.)
+
+
+---- ALGORITHMS ----
+
+>> B3: How do you ensure that the highest priority thread waiting for
+>> a lock, semaphore, or condition variable wakes up first?
+
+In a semaphore, when it is time for a thread to unblock, I sort the sema->waiters list according to priority. It then pops the first element in the list. This makes the thread with the highest priority to be unblocked first. 
+Lock uses semaphores, so this logic holds good.
+
+In condition variable, I check all the semaphores in the cond->waiters list. The semaphore containing the thread of highest priority is removed from the list and upped.
+
+>> B4: Describe the sequence of events when a call to lock_acquire()
+>> causes a priority donation.  How is nested donation handled?
+
+When a thread acquires a lock, It checks if any thread holds the lock. If none of the threads hold a lock then it goes ahead and holds the lock.
+Now when another thread tries to hold the lock which is already held by the lock holder, It is first stored in the lock holder's thread list.
+Now if the current thread's priority is greater than the lock holder's priority, I set the lock holder's priority to the current thread's priority.
+
+Nested Donation: 
+
+For nested Donation, the main thread (which is also a low thread) acquires the locks a. Now a medium thread is created and tries to hold the locks a and b. It can get b but a is held by the main thread. So a donation occurs. mains priority is increased to medium threads priority. Now another thread of higher priority is created. It tries to hold lock b. but as b is held by medium thread. Again donation occurs. medium threads priority is increased to high threads priority. Now I check if the medium thread is waiting to hold any lock which is held by any other thread of lower priority. If it is, I donate medium's priority to the lock holder. So in this case main gets highs priority (high donates to medium, medium donates to main). The last step keeps happening in a loop till there is no thread waiting to hold any lock.
+
+
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+
+The moment lock_release is called. I check if there are threads in current thread's thread list, which means that there are threads waiting for this thread to release locks. Now if there are any threads waiting on this thread to release some other lock and their was higher than this thread's at the time of donation then set the current thread's priority to that thread's priority. I set the priority to the highest of those threads. Otherwise if there are no threads waiting on this thread to release some other lock , the current thread relinquishes all the priorities it got through donation and reverts back to its priority before donation. And also I remove all the threads waiting to hold the current lock from the lock holder's list. I set the lock holder as NULL and then up the lock's semaphore.
+
+
+---- SYNCHRONIZATION ----
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+
+
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+I chose this design as it was explained in the pintos documentation. I went step by step through all the tests and checked how they should work. Once I was done with implementing everything I went ahead and removed the redundant code by making some changes. The only place I needed to think hard on what to do was in priority donation. I could have changed the lock struct and implemented a list of threads there and gone forward with it. But while implementing it I realized that I would need a list of locks too and I had a lot of conditions and the code was becoming complicated , while some of the tests were failing. I then designed everything in thread struct as threads were more accessible and I could get all the locks by chaining thread->lock->holder->lock... and also I could check if a thread had a lock while other threads were waiting on it by simply checking if the thread's list of threads was empty, which became crucial while testing for priority-donate-lower.
+
+			  ADVANCED SCHEDULER
+			  ==================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+In the thread struct in thread.h I have added 2 new fields:
+
+int nice;		/* INDRANIL niceness of this thread */
+int recent_cpu;		/* INDRANIL count of ticks this thread was running (depends on niceness and load average */
+
+nice stores the nice value set for each thread.
+recent_cpu stores the ticks for which the thread has run. Also calculated ticks.
+
+Another global variable called load_average is declared in thread.c. It stores the calculated load average value.
+
+---- ALGORITHMS ----
+
+>> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
+>> has a recent_cpu value of 0.  Fill in the table below showing the
+>> scheduling decision and the priority and recent_cpu values for each
+>> thread after each given number of timer ticks:
+
+timer  recent_cpu    priority   thread
+ticks   A   B   C   A   B   C   to run
+-----  --  --  --  --  --  --   ------
+ 0	0   0   0   63  61  59    A
+ 4	4   0   0   62  61  59    A
+ 8	8   0   0   61  61  59    A
+12	12  0   0   60  61  59    B
+16	12  4   0   60  60  59    B
+20	12  8   0   60  59  59    B
+24	16  8   0   59	59  59    A	
+28	20  8   0   58  59  59    B
+32	20  12  0   58  58  59	  C
+36	20  12  4   58  58  58    C
+
+>> C3: Did any ambiguities in the scheduler specification make values
+>> in the table uncertain?  If so, what rule did you use to resolve
+>> them?  Does this match the behavior of your scheduler?
+
+if priority is the same for 2 or more threads then the scheduler wont know which which thread to run. 
+I used a rule if the other threads priority is same then run the running thread itself, dont run the other thread.
+
+Yes, my scheduler behaves this way. 
+It behaves in this way because of the following condition:
+
+if (thread_current()->priority < t->priority && thread_current() != idle_thread) ------------   line 310 thread.c
+
+Only if priority of current thread is lower will it yield. If Its the same it will continue.
+
+>> C4: How is the way you divided the cost of scheduling between code
+>> inside and outside interrupt context likely to affect performance?
+
+Updating the priority and recent cpu for every thread and load average  inside the interrupt makes the system stay in the interrupt longer. This degrades performance at every 4th tick and 100th tick. And every 400th tick will be even slower.
+
+---- RATIONALE ----
+
+>> C5: Briefly critique your design, pointing out advantages and
+>> disadvantages in your design choices.  If you were to have extra
+>> time to work on this part of the project, how might you choose to
+>> refine or improve your design?
+
+>> C6: The assignment explains arithmetic for fixed-point math in
+>> detail, but it leaves it open to you to implement it.  Why did you
+>> decide to implement it the way you did?  If you created an
+>> abstraction layer for fixed-point math, that is, an abstract data
+>> type and/or a set of functions or macros to manipulate fixed-point
+>> numbers, why did you do so?  If not, why not?
+
+I wrote a set of functions in thread.c based on the Pintos Documentation.
+I did that because functions made the calculations simpler otherwise the formulas would be very big and hard to manage and get right.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+It was a quite tough in the beginning. But as I got to know the flow of the system it became a little easier.
+Priority donation was the hardest in my opinion. fixed point math looks easy but is quite tough to get right in one go.
+Alarm Clock and Simple Priority Scheduling were fairly simple.
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+Yes, Priority Donation and how it works.
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
